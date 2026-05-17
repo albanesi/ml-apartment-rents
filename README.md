@@ -39,10 +39,11 @@ Each notebook depends on the previous one. Always restart kernel and run all cel
 ## Results
 | Model             | MAE (CHF) | RMSE (CHF) | R²    | CV R² (log) |
 |-------------------|-----------|------------|-------|-------------|
-| Linear Regression | 59.60     | 109.10     | 0.355 | 0.383       |
-| Random Forest     | 51.29     | 99.33      | 0.465 | 0.462       |
+| Linear Regression | 58.60     | 108.00     | 0.368 | 0.385       |
+| Random Forest     | 51.38     | 100.00     | 0.458 | 0.478       |
 
 Random Forest outperforms Linear Regression on all metrics. Full metrics saved in `reports/metrics.json`.
+Model includes 6 event venue proximity features (distance in km to Hallenstadion, Letzigrund, Messe Zürich, Opernhaus, Zürich HB, and minimum distance to any venue).
 
 
 ## Key findings (SHAP)
