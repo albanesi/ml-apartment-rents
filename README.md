@@ -1,18 +1,29 @@
 # Predicting Apartment Rents — Group 2
 
 **Course:** Fundamentals of Python & Applications in Data Science
-**Option:** B — Machine Learning
+**Option:** B â€” Machine Learning
+
+## Group members
+<!-- Add your names before submission -->
+- Abel ...
+- ...
 
 ## Setup
 pip install -r requirements.txt
 
 ## Data
-Download the **detailed** listings file (79 columns) from:
-https://insideairbnb.com/get-the-data/ — select Zurich, download listings.csv.gz
-Extract and place at: data/raw/listings.csv
+**Source:** Inside Airbnb â€” Zurich, detailed listings file (79 columns)
+**Snapshot date:** 2025-09-29 (scrape_id 20250929042214)
+**Rows:** 3 417 listings
 
-IMPORTANT: Use the detailed version (listings.csv.gz, ~79 columns).
-Do NOT use the simple listings file (18 columns) — the pipeline will break.
+Processed train/test splits are committed under `data/processed/` so the pipeline
+runs without re-downloading. To reproduce from the raw file:
+
+1. Download `listings.csv.gz` from https://insideairbnb.com/get-the-data/ (select Zurich).
+2. Extract and place at `data/raw/listings.csv`.
+3. Run notebooks 01 â€” 05 in order.
+
+IMPORTANT: Use the detailed version (~79 columns). The simple 18-column file will break notebook 02.
 
 ## Reproduction — run notebooks in this exact order
 1. 01_data_ingestion.ipynb  — loads raw data, saves to data/processed/
@@ -27,7 +38,11 @@ Each notebook depends on the previous one. Always restart kernel and run all cel
 | Model             | MAE (CHF) | RMSE (CHF) | R²    |
 |-------------------|-----------|------------|-------|
 | Linear Regression | 77.40     | 117.30     | 0.254 |
-| Random Forest     | 51.85     | 100.89     | 0.448 |
+| Random Forest     | TBD*      | TBD*       | TBD*  |
+
+
+
+*Re-run notebooks 03â€“05 after log-transforming the target to get updated metrics.
 
 ## Key findings (SHAP)
 - Bedrooms is the strongest price predictor (mean SHAP ~30)

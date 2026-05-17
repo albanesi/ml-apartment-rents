@@ -2,6 +2,11 @@ data/raw/*
 !data/raw/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+!data/processed/listings_eda.csv
+!data/processed/X_train.csv
+!data/processed/X_test.csv
+!data/processed/y_train.csv
+!data/processed/y_test.csv
 .ipynb_checkpoints/
 __pycache__/
 *.pyc
