@@ -1,12 +1,14 @@
-# Predicting Apartment Rents — Group 2
+# Predicting Apartment Rents ï¿½ Group 2
 
 **Course:** Fundamentals of Python & Applications in Data Science
 **Option:** B â€” Machine Learning
 
 ## Group members
-<!-- Add your names before submission -->
-- Abel ...
-- ...
+- Ghebre Abel
+- Bertazzoli Leo
+- Brody Daniel
+- Etemi Zabit
+- Selimi Alban
 
 ## Setup
 pip install -r requirements.txt
@@ -25,24 +27,23 @@ runs without re-downloading. To reproduce from the raw file:
 
 IMPORTANT: Use the detailed version (~79 columns). The simple 18-column file will break notebook 02.
 
-## Reproduction — run notebooks in this exact order
-1. 01_data_ingestion.ipynb  — loads raw data, saves to data/processed/
-2. 02_eda.ipynb             — EDA plots, saves updated data/processed/listings_eda.csv
-3. 03_preprocessing.ipynb  — cleaning, encoding, splitting, saves X_train/X_test/y_train/y_test
-4. 04_modeling.ipynb        — trains models, saves models/rent_pipeline.pkl
-5. 05_evaluation_xai.ipynb — metrics, residuals, SHAP plots
+## Reproduction ï¿½ run notebooks in this exact order
+1. 01_data_ingestion.ipynb  ï¿½ loads raw data, saves to data/processed/
+2. 02_eda.ipynb             ï¿½ EDA plots, saves updated data/processed/listings_eda.csv
+3. 03_preprocessing.ipynb  ï¿½ cleaning, encoding, splitting, saves X_train/X_test/y_train/y_test
+4. 04_modeling.ipynb        ï¿½ trains models, saves models/rent_pipeline.pkl
+5. 05_evaluation_xai.ipynb ï¿½ metrics, residuals, SHAP plots
 
 Each notebook depends on the previous one. Always restart kernel and run all cells.
 
 ## Results
-| Model             | MAE (CHF) | RMSE (CHF) | R²    |
-|-------------------|-----------|------------|-------|
-| Linear Regression | 77.40     | 117.30     | 0.254 |
-| Random Forest     | TBD*      | TBD*       | TBD*  |
+| Model             | MAE (CHF) | RMSE (CHF) | RÂ²    | CV RÂ² (log) |
+|-------------------|-----------|------------|-------|-------------|
+| Linear Regression | 59.60     | 109.10     | 0.355 | 0.383       |
+| Random Forest     | 51.29     | 99.33      | 0.465 | 0.462       |
 
+Random Forest outperforms Linear Regression on all metrics. Full metrics saved in `reports/metrics.json`.
 
-
-*Re-run notebooks 03â€“05 after log-transforming the target to get updated metrics.
 
 ## Key findings (SHAP)
 - Bedrooms is the strongest price predictor (mean SHAP ~30)
