@@ -100,6 +100,20 @@ The first two rows are historical baselines (run before amenity features and tun
 
 Two distinct "phases" stand out: row 1 → 2 (proper Pipeline + tuning) and row 4 → 5 (harvesting unused 79-column features + text keywords) each delivered ~+0.05 R² on their own. Row 4's small R² regression was the trade we accepted for a much cleaner SHAP picture (34 sparse one-hots → 1 target-encoded column, see the note further below).
 
+### Where R² 0.587 sits, and why we stopped here
+
+Published Airbnb-price studies on single-snapshot Inside Airbnb data (NYC, Boston, Paris, London) typically report **test R² in the 0.50–0.65 range** when using only structured listing features — i.e. without images, multi-date scraping, or external booking-history data. **Our 0.587 lands in the upper half of that range.**
+
+The remaining ~41 % of price variance that no structured-features model can capture from a single snapshot is intrinsically:
+- **Host pricing strategy** (subjective, often inconsistent across hosts) — the single biggest source.
+- **Photo / visual-quality effects** that the `picture_url` field hints at but no structured column encodes.
+- **Day-of-week and event-driven dynamic pricing** the host actually charges, which only multi-date scrapes can resolve.
+- **Brand effects** of managed agencies and short-term-rental companies that aren't visible as a clean feature.
+
+To push meaningfully beyond ~0.60 would require a structurally different dataset, not better feature engineering on this one. Concretely: monthly Inside Airbnb snapshots over a year (≈ +0.10 R² achievable, but ≈ 1–2 days of data work) or CNN features extracted from `picture_url` (≈ +0.05–0.10, but 2–3 days plus GPU access). Both were out of scope for this project.
+
+**Evidence the snapshot is near-exhausted.** After reaching 0.587 we attempted four further feature ideas — OSM transit + supermarkets, OSM lake + river distance, an outlier-stratified two-expert HGB, and a 30-token guest-review TF-IDF (full details in *Experiments that didn't pay off* below). None generalised: either CV-R² regressed or held-out R² dropped. This pattern — that several reasonable, orthogonal-looking ideas no longer move the needle — is the strongest argument that the snapshot's information content for this model class is largely consumed.
+
 **Why keep target encoding despite the marginal R² drop?** The 34 one-hot neighbourhood columns were each contributing tiny SHAP values (top one-hot `Hard` at rank #42, ~0.0023) — the signal was real but **fragmented across 34 columns**. Target encoding consolidates the same signal into one column that lands in the SHAP top-10, beating `dist_hb_km`. Predictive accuracy is essentially unchanged at that step, but the SHAP picture and the model's overall feature count are dramatically cleaner — and the encoder's internal 5-fold CV makes it leakage-free.
 
 Best hyperparameters from `GridSearchCV` on the current run:
