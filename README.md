@@ -82,12 +82,23 @@ A consumer can `joblib.load(...).predict(raw_dataframe)` — no separate scaler,
 
 The first two rows are historical baselines (run before amenity features and tuning were added) and are kept for reference. The tuned-RF and tuned-HGB rows show only CV-R² on the training set — by policy the held-out test set is touched exactly once, on the winning model. Test metrics for the winner (MAE / RMSE / R²) are written to `reports/metrics.json` by nb05.
 
-Cumulative lift on held-out R² from successive feature work:
-- + `property_type`, `host_*`, `review_scores_*`: R² **0.478 → 0.530** (+0.052)
-- + top-30 amenity one-hots (replacing hand-picked 10): R² **0.530 → 0.535** (+0.005)
-- + target-encoded neighbourhood (replacing 34 one-hots): R² **0.535 → 0.530** (−0.005, kept for interpretability — see note below)
-- + expanded columns from the 79-col file (`host_total_listings_count`, `beds`, `instant_bookable`, `availability_30/60/90`, `number_of_reviews_ltm/l30d`, `host_response_time`) + 14 text features from `name`/`description`: R² **0.530 → 0.573** (+0.043)
-- + 6 calendar-derived features (min/max-stay strategy, weekend pressure, ZFF + Xmas availability): R² **0.573 → 0.587** (+0.014)
+### Iteration-by-iteration evolution of held-out metrics
+
+Δ MAE / Δ RMSE are *relative* changes (how many percent smaller); Δ R² is *absolute* (R² is already a fraction, so 0.020 means "+2 percentage points of variance explained"). Each row's Δ values compare against the **immediately previous row**, not the baseline.
+
+| # | Iteration / change                                                            | MAE (CHF) | Δ MAE     | RMSE (CHF) | Δ RMSE    | Test R² | Δ R²       |
+|---|-------------------------------------------------------------------------------|-----------|-----------|------------|-----------|---------|------------|
+| 0 | Pre-PR RF baseline (hand-rolled scaler, untuned)                              | 51.38     | —         | 100.00     | —         | 0.458   | —          |
+| 1 | + sklearn `Pipeline` + `GridSearchCV` → HGB winner                            | 41.20     | **−19.8%**| 70.61      | **−29.4%**| 0.478   | **+0.020** |
+| 2 | + `property_type`, `host_*`, `review_scores_*`                                | 38.80     | **−5.8%** | 67.02      | **−5.1%** | 0.530   | **+0.052** |
+| 3 | + top-30 amenity one-hots (replacing 10 hand-picked)                          | 38.29     | **−1.3%** | 66.64      | **−0.6%** | 0.535   | **+0.005** |
+| 4 | + target-encoded `neighbourhood_cleansed` (interpretability, see note below)  | 38.14     | −0.4%     | 66.98      | +0.5%     | 0.530   | −0.005     |
+| 5 | + unused listings.csv columns + 14 text features from `name`/`description`    | 36.50     | **−4.3%** | 63.88      | **−4.6%** | 0.573   | **+0.043** |
+| **6** | **+ 6 calendar.csv features** (min/max-stay, weekend pressure, ZFF/Xmas) | **36.32** | **−0.5%** | **62.81**  | **−1.7%** | **0.587** | **+0.014** |
+|   | **Cumulative (#0 → #6)**                                                      |           | **−29.3%**|            | **−37.2%**|         | **+0.129** |
+|   | **Cumulative (#1 → #6, feature-engineering only)**                            |           | **−11.8%**|            | **−11.0%**|         | **+0.109** |
+
+Two distinct "phases" stand out: row 1 → 2 (proper Pipeline + tuning) and row 4 → 5 (harvesting unused 79-column features + text keywords) each delivered ~+0.05 R² on their own. Row 4's small R² regression was the trade we accepted for a much cleaner SHAP picture (34 sparse one-hots → 1 target-encoded column, see the note further below).
 
 **Why keep target encoding despite the marginal R² drop?** The 34 one-hot neighbourhood columns were each contributing tiny SHAP values (top one-hot `Hard` at rank #42, ~0.0023) — the signal was real but **fragmented across 34 columns**. Target encoding consolidates the same signal into one column that lands in the SHAP top-10, beating `dist_hb_km`. Predictive accuracy is essentially unchanged at that step, but the SHAP picture and the model's overall feature count are dramatically cleaner — and the encoder's internal 5-fold CV makes it leakage-free.
 
@@ -117,7 +128,14 @@ See `reports/figures/shap_summary.png` for the beeswarm (direction + magnitude p
 
 ## Experiments that didn't pay off
 
-For transparency, a few feature ideas we tried but reverted because they did not improve held-out R²:
+| Experiment                                       | Tried after step | Test R² (before) | Test R² (after) | Δ R²    | Outcome                                       |
+|--------------------------------------------------|------------------|------------------|-----------------|---------|-----------------------------------------------|
+| OSM transit stops + supermarkets in 500 m radius | 2 (R² 0.530)     | 0.530            | 0.535           | +0.005  | reverted — CV-R² dropped 0.635 → 0.626        |
+| OSM Zürichsee shore + Limmat river distance      | 2 (R² 0.530)     | 0.530            | 0.522           | −0.008  | reverted — within noise; signal redundant     |
+| Outlier-stratified HGB (mixture-of-experts)      | 4 (R² 0.530)     | 0.530            | n/a (CV lost)   | n/a     | reverted — CV-R² 0.641 → 0.558, never reached test |
+| Guest-review TF-IDF (top-30 tokens)              | 6 (R² 0.587)     | 0.587            | 0.563           | −0.024  | reverted — overfit (CV flat, test dropped)    |
+
+Details on each attempt:
 
 - **OSM transit stops + supermarkets in 500 m radius.** `dist_nearest_transit_km` and `n_supermarkets_500m` fetched from OpenStreetMap via the Overpass API. Zurich's transit network is so dense that almost every listing sits within ~150 m of a stop (median 112 m, max 711 m), so the distance has no discriminative power. Supermarket density correlated with `dist_hb_km` (city centre), so the model already had that signal. Both features landed at SHAP rank #26 / #30 and CV-R² dropped slightly (0.635 → 0.626).
 - **Distance to Zürichsee shore + Limmat river.** Same OSM source. These features *do* carry signal (SHAP rank #12 / #13), but SHAP simply redistributed importance from the existing `dist_opernhaus_km` and `dist_hb_km` features — held-out R² changed by −0.008 (within noise). Lake/river proximity is already implicitly captured by the central-Zurich venue distances.
