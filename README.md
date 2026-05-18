@@ -94,6 +94,15 @@ Compared to the previous run without host/review/property_type features, the mod
 
 See `reports/figures/shap_summary.png` for the beeswarm (direction + magnitude per sample) and `shap_bar.png` for the mean-impact ranking.
 
+## Experiments that didn't pay off
+
+For transparency, a few feature ideas we tried but reverted because they did not improve held-out R²:
+
+- **OSM transit stops + supermarkets in 500 m radius.** `dist_nearest_transit_km` and `n_supermarkets_500m` fetched from OpenStreetMap via the Overpass API. Zurich's transit network is so dense that almost every listing sits within ~150 m of a stop (median 112 m, max 711 m), so the distance has no discriminative power. Supermarket density correlated with `dist_hb_km` (city centre), so the model already had that signal. Both features landed at SHAP rank #26 / #30 and CV-R² dropped slightly (0.635 → 0.626).
+- **Distance to Zürichsee shore + Limmat river.** Same OSM source. These features *do* carry signal (SHAP rank #12 / #13), but SHAP simply redistributed importance from the existing `dist_opernhaus_km` and `dist_hb_km` features — held-out R² changed by −0.008 (within noise). Lake/river proximity is already implicitly captured by the central-Zurich venue distances.
+
+Conclusion: when several distance features overlap geographically, adding more of them does not stack; the model just spreads the same signal across more columns. External data only helps when it captures something genuinely orthogonal to what is already in the feature set.
+
 ## Output
 - Trained model:  models/rent_pipeline.pkl
 - Figures:        reports/figures/
