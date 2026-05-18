@@ -21,8 +21,8 @@ pip install -r requirements.txt
 Processed train/test splits are committed under `data/processed/` so the pipeline
 runs without re-downloading. To reproduce from the raw file:
 
-1. Download `listings.csv.gz` from https://insideairbnb.com/get-the-data/ (select Zurich).
-2. Extract and place at `data/raw/listings.csv`.
+1. Download `listings.csv.gz` and `calendar.csv.gz` from https://insideairbnb.com/get-the-data/ (select Zurich).
+2. Extract `listings.csv.gz` and place at `data/raw/listings.csv`. Leave `calendar.csv.gz` gzipped at `data/raw/calendar.csv.gz` (pandas reads it directly).
 3. Run notebooks 01 — 05 in order.
 
 IMPORTANT: Use the detailed version (~79 columns). The simple 18-column file will break notebook 02.
@@ -61,6 +61,7 @@ A consumer can `joblib.load(...).predict(raw_dataframe)` — no separate scaler,
 - **Host signals (5):** `host_is_superhost`, `host_response_rate` (%), `host_acceptance_rate` (%), `host_response_time` (ordinal 1–4, lower = faster), `host_total_listings_count` (signals professional vs. private hosts)
 - **Review scores (7):** `review_scores_rating` plus six subscores (accuracy, cleanliness, check-in, communication, location, value). All numeric; ~24% of listings have no reviews and are median-imputed inside the Pipeline.
 - **Text features (14)** from `name` + `description`: 2 length features (`text_name_len`, `text_desc_len`) + 12 bilingual keyword flags (`text_luxury`, `text_view`, `text_central`, `text_modern`, `text_terrace`, `text_renovated`, `text_lake`, `text_river`, `text_quiet`, `text_design`, `text_spacious`, `text_charming`) — regexes match both German and English variants.
+- **Calendar-derived (6)** from `calendar.csv.gz` (per-listing aggregates over the next 365 days; joined in nb03 via `id`): `cal_min_nights_median`, `cal_min_nights_std`, `cal_max_nights_median` (min/max-stay strategy), `cal_avail_weekend_premium` (weekend booking pressure), `cal_avail_rate_zff_2025` (Sep 29 – Oct 5 2025 availability — direct ZFF event-pressure signal), `cal_avail_rate_winter_hols` (Dec 20 – Jan 2 availability). The calendar's `price` column is fully NaN in recent Inside Airbnb snapshots, so we use only structural/availability aggregates — these are also genuinely orthogonal to `listings.csv` (which has only single-value snapshots).
 
 ## Results
 | Model                       | MAE (CHF) | RMSE (CHF) | R²    | CV R² (log) |
@@ -74,8 +75,10 @@ A consumer can `joblib.load(...).predict(raw_dataframe)` — no separate scaler,
 | Random Forest (tuned) — target-encoded neighbourhood | —         | —          | —     | 0.587       |
 | HistGradientBoosting (tuned) — target-encoded neighbourhood | —         | —          | —     | 0.641       |
 | Random Forest (tuned) — expanded columns + text features | —         | —          | —     | 0.614       |
-| HistGradientBoosting (tuned) — expanded columns + text features | —         | —          | —     | **0.670**   |
-| **Winner: HistGradientBoosting** (saved to `rent_pipeline.pkl`) | **36.50** | **63.88** | **0.573** | **0.670** |
+| HistGradientBoosting (tuned) — expanded columns + text features | —         | —          | —     | 0.670       |
+| Random Forest (tuned) — + calendar.csv features | —         | —          | —     | 0.619       |
+| HistGradientBoosting (tuned) — + calendar.csv features | —         | —          | —     | **0.668**   |
+| **Winner: HistGradientBoosting** (saved to `rent_pipeline.pkl`) | **36.32** | **62.81** | **0.587** | **0.668** |
 
 The first two rows are historical baselines (run before amenity features and tuning were added) and are kept for reference. The tuned-RF and tuned-HGB rows show only CV-R² on the training set — by policy the held-out test set is touched exactly once, on the winning model. Test metrics for the winner (MAE / RMSE / R²) are written to `reports/metrics.json` by nb05.
 
@@ -84,6 +87,7 @@ Cumulative lift on held-out R² from successive feature work:
 - + top-30 amenity one-hots (replacing hand-picked 10): R² **0.530 → 0.535** (+0.005)
 - + target-encoded neighbourhood (replacing 34 one-hots): R² **0.535 → 0.530** (−0.005, kept for interpretability — see note below)
 - + expanded columns from the 79-col file (`host_total_listings_count`, `beds`, `instant_bookable`, `availability_30/60/90`, `number_of_reviews_ltm/l30d`, `host_response_time`) + 14 text features from `name`/`description`: R² **0.530 → 0.573** (+0.043)
+- + 6 calendar-derived features (min/max-stay strategy, weekend pressure, ZFF + Xmas availability): R² **0.573 → 0.587** (+0.014)
 
 **Why keep target encoding despite the marginal R² drop?** The 34 one-hot neighbourhood columns were each contributing tiny SHAP values (top one-hot `Hard` at rank #42, ~0.0023) — the signal was real but **fragmented across 34 columns**. Target encoding consolidates the same signal into one column that lands in the SHAP top-10, beating `dist_hb_km`. Predictive accuracy is essentially unchanged at that step, but the SHAP picture and the model's overall feature count are dramatically cleaner — and the encoder's internal 5-fold CV makes it leakage-free.
 
@@ -97,18 +101,17 @@ A `DummyRegressor(strategy='mean')` baseline is also printed in nb04 to anchor w
 
 Mean |SHAP value| on log-price scale (top features, from `reports/figures/shap_bar.png`):
 
-1. **`accommodates`** — strongest predictor by a wide margin (≈0.125).
-2. **`bedrooms`** — clear second (≈0.07).
-3. **`property_type_Private room in rental unit`** (≈0.047) — 31-category property type's most discriminating one-hot.
-4. **`host_total_listings_count` at #4** (≈0.046) — **the largest single new signal from this iteration**: distinguishes professional managers (max 2 396 listings in the data!) from private hosts. These two host classes price systematically differently.
-5. **`room_type_Private room`** (#5, ≈0.042) and **`availability_30`** (#6, ≈0.038) — granular room split + short-term booking pressure.
-6. **`minimum_nights`** (#7), **`dist_opernhaus_km`** (#8), **target-encoded `neighbourhood_cleansed`** (#9, ≈0.033) — central-location and neighbourhood-prior signals.
-7. **`host_acceptance_rate`** (#10), **`dist_hb_km`** (#11), **`review_scores_rating`** (#12) — host responsiveness and review quality close out the top-12.
-8. **Text & booking-dynamics features earn their place:** `availability_90` (#14), `number_of_reviews_l30d` (#19), `beds` (#22), `text_modern` (#23) — listings describing themselves with "modern"/"moderne"/"stylish" command a price premium, even after controlling for room type and property type. `text_desc_len` (#26) and `text_name_len` (#29) act as quality proxies (longer copy = more polished listing).
-9. **Top amenity flags:** `amen_dishwasher` (#13), `amen_tv` (#16), `amen_lockbox` (#17). About half of the 30 amenities sit below SHAP rank #60 — dead weight the tree model ignores.
-10. **Surprising flops in this iteration:** `instant_bookable` at #59 (the convenience signal is weaker than we expected) and some text keywords that sounded promising in advance — `text_view`, `text_lake`, `text_river`, `text_renovated` all below rank #75. "View"-related keywords likely matter less than the photo itself (which we don't have).
+1. **`accommodates`** (≈0.12) and **`bedrooms`** (≈0.08) — structural capacity dominates.
+2. **`property_type_Private room in rental unit`** (#3, ≈0.052) and **`room_type_Private room`** (#5, ≈0.042) — granular room split.
+3. **`host_total_listings_count` at #4** (≈0.048) — distinguishes professional managers (max 2 396 listings in the data!) from private hosts.
+4. **`availability_30`** (#6, ≈0.035), **`neighbourhood_cleansed`** target-encoded (#7, ≈0.035), **`dist_opernhaus_km`** (#8), **`dist_hb_km`** (#9) — booking pressure and central-location signal.
+5. **Calendar features land high: `cal_min_nights_median` at #10** (≈0.028) — the typical minimum-stay setting from the per-day calendar carries more signal than the single-value `minimum_nights` snapshot (which sits at #25). `cal_avail_weekend_premium` (#22) and `cal_min_nights_std` (#23) also land top-25; `cal_max_nights_median` is #26.
+6. **`review_scores_rating`** (#11), **`host_acceptance_rate`** (#12), **`amen_tv`** (#13), **`availability_90`** (#14) — host-quality and booking-window signals.
+7. **`amen_dishwasher`** (#16), **`number_of_reviews_l30d`** (#19), **`beds`** (#20) — amenity + booking-velocity + structural follow-ups. About half of the 30 amenities sit below SHAP rank #60 — dead weight the tree model ignores.
+8. **`text_modern`** at ~#28 still represents the text-keyword family. "Modern"/"moderne"/"stylish" in the listing copy carries a real price premium; `text_desc_len` and `text_name_len` are nearby as quality proxies.
+9. **Surprising flops:** `instant_bookable` and several text keywords (`text_view`, `text_lake`, `text_river`, `text_renovated`) sit below rank #60. Also flat: `cal_avail_rate_zff_2025` (#52) and `cal_avail_rate_winter_hols` (#44) — event-period availability is less differentiating than the full-year strategy aggregates, probably because too few days are in each window.
 
-Compared to the earliest run, the model now uses a much more diverse feature mix: structural capacity → location (distance + neighbourhood prior) → property granularity → host professionalisation → booking dynamics → review quality → amenities → text framing. The cumulative lift on test R² (0.478 → 0.573, +0.095) is consistent with each of these feature families carrying genuine, partially-orthogonal pricing signal.
+Compared to the earliest run, the model now uses a much more diverse feature mix: structural capacity → location (distance + neighbourhood prior) → property granularity → host professionalisation → booking dynamics (incl. per-day calendar strategy) → review quality → amenities → text framing. The cumulative lift on test R² (0.478 → 0.587, +0.109) is consistent with each of these feature families carrying genuine, partially-orthogonal pricing signal.
 
 See `reports/figures/shap_summary.png` for the beeswarm (direction + magnitude per sample) and `shap_bar.png` for the mean-impact ranking.
 

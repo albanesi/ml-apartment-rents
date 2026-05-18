@@ -1,5 +1,6 @@
 data/raw/*
 !data/raw/.gitkeep
+!data/raw/calendar.csv.gz
 data/processed/*
 !data/processed/.gitkeep
 !data/processed/listings_eda.csv
