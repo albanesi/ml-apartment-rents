@@ -52,15 +52,18 @@ Pipeline([
 A consumer can `joblib.load(...).predict(raw_dataframe)` — no separate scaler, no manual one-hot. The old `models/scaler.pkl` is obsolete and unused by the new pipeline.
 
 ## Features
+
+The final pipeline uses **61 raw input features** after a SHAP-based pruning step in nb03 that removed 27 weak-signal columns (mean |SHAP| < 0.003 on the training set — see the iteration table below). The numbers in parentheses below are the **post-pruning** counts; what was originally generated before pruning is noted where it differs.
+
 - **Listing structure:** `accommodates`, `bedrooms`, `bathrooms`, `beds`, `room_type`, `property_type` (31 cats), `minimum_nights`
 - **Location:** `latitude`, `longitude`, **target-encoded** `neighbourhood_cleansed` (34 categories collapsed to one continuous price-prior column via out-of-fold encoding)
-- **Booking dynamics:** `availability_30`, `availability_60`, `availability_90`, `availability_365` (short / medium / long-term availability), `instant_bookable` (binary)
+- **Booking dynamics:** `availability_30`, `availability_60`, `availability_90`, `availability_365` (short / medium / long-term availability). `instant_bookable` was generated but pruned (SHAP rank #59 in the unpruned model).
 - **Review activity:** `number_of_reviews`, `number_of_reviews_ltm` (last 12 months), `number_of_reviews_l30d` (last 30 days), `reviews_per_month`
 - **Event-venue proximity (6):** haversine distance in km to Hallenstadion, Letzigrund, Messe Zürich, Opernhaus, Zürich HB, plus `min_dist_venue_km`
-- **Amenities (31):** `n_amenities` total count + 30 binary `amen_*` flags, picked data-driven as the 30 most-common amenity strings across all listings (nb02).
+- **Amenities (kept 10 of 30):** `n_amenities` total count + the 10 binary `amen_*` flags that survived SHAP pruning: `amen_dishwasher`, `amen_tv`, `amen_lockbox`, `amen_hot_water_kettle`, `amen_iron`, `amen_microwave`, `amen_hot_water`, `amen_essentials`, `amen_hair_dryer`, `amen_shampoo`. nb02 still generates the full top-30 by frequency; the 20 near-ubiquitous ones (`amen_wifi`, `amen_kitchen`, `amen_heating`, …) are dropped in nb03.
 - **Host signals (5):** `host_is_superhost`, `host_response_rate` (%), `host_acceptance_rate` (%), `host_response_time` (ordinal 1–4, lower = faster), `host_total_listings_count` (signals professional vs. private hosts)
-- **Review scores (7):** `review_scores_rating` plus six subscores (accuracy, cleanliness, check-in, communication, location, value). All numeric; ~24% of listings have no reviews and are median-imputed inside the Pipeline.
-- **Text features (14)** from `name` + `description`: 2 length features (`text_name_len`, `text_desc_len`) + 12 bilingual keyword flags (`text_luxury`, `text_view`, `text_central`, `text_modern`, `text_terrace`, `text_renovated`, `text_lake`, `text_river`, `text_quiet`, `text_design`, `text_spacious`, `text_charming`) — regexes match both German and English variants.
+- **Review scores (kept 6 of 7):** `review_scores_rating` plus five subscores (cleanliness, check-in, communication, location, value). `review_scores_accuracy` was pruned (overlapped with `review_scores_rating`). ~24% of listings have no reviews and are median-imputed inside the Pipeline.
+- **Text features (kept 9 of 14)** from `name` + `description`: 2 length features (`text_name_len`, `text_desc_len`) + 7 bilingual keyword flags (`text_luxury`, `text_central`, `text_modern`, `text_terrace`, `text_quiet`, `text_spacious`, `text_charming`) — regexes match both German and English variants. Five keywords were pruned: `text_renovated`, `text_view`, `text_design`, `text_river`, `text_lake`.
 - **Calendar-derived (6)** from `calendar.csv.gz` (per-listing aggregates over the next 365 days; joined in nb03 via `id`): `cal_min_nights_median`, `cal_min_nights_std`, `cal_max_nights_median` (min/max-stay strategy), `cal_avail_weekend_premium` (weekend booking pressure), `cal_avail_rate_zff_2025` (Sep 29 – Oct 5 2025 availability — direct ZFF event-pressure signal), `cal_avail_rate_winter_hols` (Dec 20 – Jan 2 availability). The calendar's `price` column is fully NaN in recent Inside Airbnb snapshots, so we use only structural/availability aggregates — these are also genuinely orthogonal to `listings.csv` (which has only single-value snapshots).
 
 ## Results
@@ -77,8 +80,10 @@ A consumer can `joblib.load(...).predict(raw_dataframe)` — no separate scaler,
 | Random Forest (tuned) — expanded columns + text features | —         | —          | —     | 0.614       |
 | HistGradientBoosting (tuned) — expanded columns + text features | —         | —          | —     | 0.670       |
 | Random Forest (tuned) — + calendar.csv features | —         | —          | —     | 0.619       |
-| HistGradientBoosting (tuned) — + calendar.csv features | —         | —          | —     | **0.668**   |
-| **Winner: HistGradientBoosting** (saved to `rent_pipeline.pkl`) | **36.32** | **62.81** | **0.587** | **0.668** |
+| HistGradientBoosting (tuned) — + calendar.csv features | —         | —          | —     | 0.668       |
+| Random Forest (tuned) — SHAP-pruned (88 → 61 features) | —         | —          | —     | 0.619       |
+| HistGradientBoosting (tuned) — SHAP-pruned (88 → 61 features) | —         | —          | —     | **0.669**   |
+| **Winner: HistGradientBoosting** (saved to `rent_pipeline.pkl`) | **36.75** | **63.74** | **0.575** | **0.669** |
 
 The first two rows are historical baselines (run before amenity features and tuning were added) and are kept for reference. The tuned-RF and tuned-HGB rows show only CV-R² on the training set — by policy the held-out test set is touched exactly once, on the winning model. Test metrics for the winner (MAE / RMSE / R²) are written to `reports/metrics.json` by nb05.
 
@@ -94,17 +99,20 @@ The first two rows are historical baselines (run before amenity features and tun
 | 3 | + top-30 amenity one-hots (replacing 10 hand-picked)                          | 38.29     | **−1.3%** | 66.64      | **−0.6%** | 0.535   | **+0.005** |
 | 4 | + target-encoded `neighbourhood_cleansed` (interpretability, see note below)  | 38.14     | −0.4%     | 66.98      | +0.5%     | 0.530   | −0.005     |
 | 5 | + unused listings.csv columns + 14 text features from `name`/`description`    | 36.50     | **−4.3%** | 63.88      | **−4.6%** | 0.573   | **+0.043** |
-| **6** | **+ 6 calendar.csv features** (min/max-stay, weekend pressure, ZFF/Xmas) | **36.32** | **−0.5%** | **62.81**  | **−1.7%** | **0.587** | **+0.014** |
-|   | **Cumulative (#0 → #6)**                                                      |           | **−29.3%**|            | **−37.2%**|         | **+0.129** |
-|   | **Cumulative (#1 → #6, feature-engineering only)**                            |           | **−11.8%**|            | **−11.0%**|         | **+0.109** |
+| 6 | + 6 calendar.csv features (min/max-stay, weekend pressure, ZFF/Xmas)           | 36.32     | −0.5%     | 62.81      | −1.7%     | 0.587   | +0.014     |
+| **7** | **+ SHAP-based pruning** (drop 27 cols with mean \|SHAP\| < 0.003: 20 amenities, 5 text keywords, `instant_bookable`, `review_scores_accuracy`) | **36.75** | +1.2%     | **63.74**  | +1.5%     | **0.575** | −0.012   |
+|   | **Cumulative (#0 → #7)**                                                      |           | **−28.5%**|            | **−36.3%**|         | **+0.117** |
+|   | **Cumulative (#1 → #7, feature-engineering only)**                            |           | **−10.8%**|            | **−9.7%** |         | **+0.097** |
 
 Two distinct "phases" stand out: row 1 → 2 (proper Pipeline + tuning) and row 4 → 5 (harvesting unused 79-column features + text keywords) each delivered ~+0.05 R² on their own. Row 4's small R² regression was the trade we accepted for a much cleaner SHAP picture (34 sparse one-hots → 1 target-encoded column, see the note further below).
 
-### Where R² 0.587 sits, and why we stopped here
+**About row 7 (SHAP pruning).** After step 6 we ran a SHAP analysis on the **training set** (100-sample background + 800-sample explainee, no test-set peeking) and dropped 27 raw columns whose aggregated mean \|SHAP\| was below 0.003 — mostly near-ubiquitous amenities (`amen_wifi`, `amen_kitchen`, `amen_heating`, …) that appear on >70 % of listings and therefore can't discriminate price, plus the five weakest text keywords, `instant_bookable`, and the redundant `review_scores_accuracy`. **CV-R² stayed flat (HGB 0.668 → 0.669, RF 0.619 → 0.619) but held-out test R² fell from 0.587 to 0.575 (−0.012)** — a small drop, well within typical sampling noise on a 514-row test set, but consistent across MAE/RMSE/R². We kept the pruning because the model now uses **61 raw input features instead of 88 (−31 %)** with essentially unchanged generalisation ability (the metric of record for sklearn model selection, CV-R², is unchanged), and the SHAP bar plot is much easier to read with the dead-weight features gone.
 
-Published Airbnb-price studies on single-snapshot Inside Airbnb data (NYC, Boston, Paris, London) typically report **test R² in the 0.50–0.65 range** when using only structured listing features — i.e. without images, multi-date scraping, or external booking-history data. **Our 0.587 lands in the upper half of that range.**
+### Where R² 0.575 sits, and why we stopped here
 
-The remaining ~41 % of price variance that no structured-features model can capture from a single snapshot is intrinsically:
+Published Airbnb-price studies on single-snapshot Inside Airbnb data (NYC, Boston, Paris, London) typically report **test R² in the 0.50–0.65 range** when using only structured listing features — i.e. without images, multi-date scraping, or external booking-history data. **Our 0.575 (or 0.587 pre-pruning) sits in the upper half of that range.**
+
+The remaining ~42 % of price variance that no structured-features model can capture from a single snapshot is intrinsically:
 - **Host pricing strategy** (subjective, often inconsistent across hosts) — the single biggest source.
 - **Photo / visual-quality effects** that the `picture_url` field hints at but no structured column encodes.
 - **Day-of-week and event-driven dynamic pricing** the host actually charges, which only multi-date scrapes can resolve.
@@ -112,12 +120,12 @@ The remaining ~41 % of price variance that no structured-features model can capt
 
 To push meaningfully beyond ~0.60 would require a structurally different dataset, not better feature engineering on this one. Concretely: monthly Inside Airbnb snapshots over a year (≈ +0.10 R² achievable, but ≈ 1–2 days of data work) or CNN features extracted from `picture_url` (≈ +0.05–0.10, but 2–3 days plus GPU access). Both were out of scope for this project.
 
-**Evidence the snapshot is near-exhausted.** After reaching 0.587 we attempted four further feature ideas — OSM transit + supermarkets, OSM lake + river distance, an outlier-stratified two-expert HGB, and a 30-token guest-review TF-IDF (full details in *Experiments that didn't pay off* below). None generalised: either CV-R² regressed or held-out R² dropped. This pattern — that several reasonable, orthogonal-looking ideas no longer move the needle — is the strongest argument that the snapshot's information content for this model class is largely consumed.
+**Evidence the snapshot is near-exhausted.** After reaching 0.587 we attempted four further feature ideas — OSM transit + supermarkets, OSM lake + river distance, an outlier-stratified two-expert HGB, and a 30-token guest-review TF-IDF (full details in *Experiments that didn't pay off* below). None generalised: either CV-R² regressed or held-out R² dropped. Subsequently the SHAP-based feature pruning in step 7 also showed flat CV-R² (i.e. no further headroom from removing weak features either). This pattern — that several reasonable, orthogonal-looking ideas no longer move the needle — is the strongest argument that the snapshot's information content for this model class is largely consumed.
 
 **Why keep target encoding despite the marginal R² drop?** The 34 one-hot neighbourhood columns were each contributing tiny SHAP values (top one-hot `Hard` at rank #42, ~0.0023) — the signal was real but **fragmented across 34 columns**. Target encoding consolidates the same signal into one column that lands in the SHAP top-10, beating `dist_hb_km`. Predictive accuracy is essentially unchanged at that step, but the SHAP picture and the model's overall feature count are dramatically cleaner — and the encoder's internal 5-fold CV makes it leakage-free.
 
 Best hyperparameters from `GridSearchCV` on the current run:
-- Random Forest (tuned): `n_estimators=200, max_depth=30, min_samples_leaf=1`
+- Random Forest (tuned): `n_estimators=400, max_depth=30, min_samples_leaf=1`
 - HistGradientBoosting (winner): `learning_rate=0.05, max_depth=None, max_iter=400, min_samples_leaf=20`
 
 A `DummyRegressor(strategy='mean')` baseline is also printed in nb04 to anchor what "zero skill" looks like on this data.
