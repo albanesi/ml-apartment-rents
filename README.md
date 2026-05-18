@@ -41,9 +41,10 @@ The saved `rent_pipeline.pkl` contains a single `sklearn.pipeline.Pipeline`:
 ```
 Pipeline([
     ('pre', ColumnTransformer([
-        ('num', SimpleImputer(median) → StandardScaler, NUMERIC),
-        ('cat', OneHotEncoder(handle_unknown='ignore'),  ['neighbourhood_cleansed', 'room_type']),
-        ('bin', 'passthrough',                            has_* flags),
+        ('num',    SimpleImputer(median) → StandardScaler,         NUMERIC),
+        ('cat_te', TargetEncoder(cv=5, smooth='auto'),              ['neighbourhood_cleansed']),
+        ('cat_oh', OneHotEncoder(handle_unknown='ignore'),          ['room_type', 'property_type']),
+        ('bin',    'passthrough',                                    BINARY),
     ])),
     ('model', <winning estimator>),
 ])
@@ -52,7 +53,7 @@ A consumer can `joblib.load(...).predict(raw_dataframe)` — no separate scaler,
 
 ## Features
 - **Listing structure:** `accommodates`, `bedrooms`, `bathrooms`, `room_type`, `property_type` (31 cats), `minimum_nights`
-- **Location:** `latitude`, `longitude`, one-hot `neighbourhood_cleansed`
+- **Location:** `latitude`, `longitude`, **target-encoded** `neighbourhood_cleansed` (34 categories collapsed to one continuous price-prior column via out-of-fold encoding)
 - **Activity:** `availability_365`, `number_of_reviews`, `reviews_per_month`
 - **Event-venue proximity (6):** haversine distance in km to Hallenstadion, Letzigrund, Messe Zürich, Opernhaus, Zürich HB, plus `min_dist_venue_km`
 - **Amenities (31):** `n_amenities` total count + 30 binary `amen_*` flags, picked data-driven as the 30 most-common amenity strings across all listings (nb02). Replaces an earlier hand-picked 10-flag set; the wider net let the model surface signals the curated list missed (TV, lockbox, hot-water kettle, iron).
@@ -66,19 +67,24 @@ A consumer can `joblib.load(...).predict(raw_dataframe)` — no separate scaler,
 | Random Forest (n=100, untuned, baseline) | 51.38     | 100.00     | 0.458 | 0.478       |
 | Random Forest (tuned) — pre-amenity-expansion | —         | —          | —     | 0.583       |
 | HistGradientBoosting (tuned) — pre-amenity-expansion | —         | —          | —     | 0.635       |
-| Random Forest (tuned) — top-30 amenities | —         | —          | —     | 0.590       |
-| HistGradientBoosting (tuned) — top-30 amenities | —         | —          | —     | **0.644**   |
-| **Winner: HistGradientBoosting** (saved to `rent_pipeline.pkl`) | **38.29** | **66.64** | **0.535** | **0.644** |
+| Random Forest (tuned) — top-30 amenities + one-hot neighbourhood | —         | —          | —     | 0.590       |
+| HistGradientBoosting (tuned) — top-30 amenities + one-hot neighbourhood | —         | —          | —     | 0.644       |
+| Random Forest (tuned) — target-encoded neighbourhood | —         | —          | —     | 0.587       |
+| HistGradientBoosting (tuned) — target-encoded neighbourhood | —         | —          | —     | **0.641**   |
+| **Winner: HistGradientBoosting** (saved to `rent_pipeline.pkl`) | **38.14** | **66.98** | **0.530** | **0.641** |
 
 The first two rows are historical baselines (run before amenity features and tuning were added) and are kept for reference. The tuned-RF and tuned-HGB rows show only CV-R² on the training set — by policy the held-out test set is touched exactly once, on the winning model. Test metrics for the winner (MAE / RMSE / R²) are written to `reports/metrics.json` by nb05.
 
 Cumulative lift on held-out R² from successive feature work:
 - + `property_type`, `host_*`, `review_scores_*`: R² **0.478 → 0.530** (+0.052)
 - + top-30 amenity one-hots (replacing hand-picked 10): R² **0.530 → 0.535** (+0.005)
+- + target-encoded neighbourhood (replacing 34 one-hots): R² **0.535 → 0.530** (−0.005, kept for interpretability — see note below)
+
+**Why keep target encoding despite the marginal R² drop?** The 34 one-hot neighbourhood columns were each contributing tiny SHAP values (top one-hot `Hard` at rank #42, ~0.0023) — the signal was real but **fragmented across 34 columns**. Target encoding consolidates the same signal into one column that lands at SHAP rank **#11** (mean |SHAP| 0.032), beating `dist_hb_km`. Predictive accuracy is essentially unchanged (within 0.005 R²), but the SHAP picture and the model's overall feature count (123 → 90) are dramatically cleaner — and the encoder's internal 5-fold CV makes it leakage-free.
 
 Best hyperparameters from `GridSearchCV` on the current run:
-- Random Forest (tuned): `n_estimators=200, max_depth=30, min_samples_leaf=1`
-- HistGradientBoosting (winner): `learning_rate=0.05, max_depth=None, max_iter=400, min_samples_leaf=20`
+- Random Forest (tuned): `n_estimators=400, max_depth=None, min_samples_leaf=1`
+- HistGradientBoosting (winner): `learning_rate=0.05, max_depth=6, max_iter=400, min_samples_leaf=20`
 
 A `DummyRegressor(strategy='mean')` baseline is also printed in nb04 to anchor what "zero skill" looks like on this data.
 
@@ -87,14 +93,15 @@ A `DummyRegressor(strategy='mean')` baseline is also printed in nb04 to anchor w
 Mean |SHAP value| on log-price scale (top features, from `reports/figures/shap_bar.png`):
 
 1. **`accommodates`** — strongest predictor by a wide margin (≈0.13).
-2. **`bedrooms`** — clear second (≈0.07).
-3. **`availability_365`** and **`dist_opernhaus_km`** — top-4 (≈0.05). Host-activity and central-location signal.
-4. **`dist_hb_km`** and the new **`property_type_Private room in rental unit`** (≈0.04) — the 31-category `property_type` captures finer distinctions than the 3-category `room_type` and overtakes it in importance.
-5. **Review / host features land in the top-12:** `review_scores_rating` (#7) and `host_acceptance_rate` (#12). `review_scores_cleanliness` is in the top-15. These features outrank `n_amenities` and every individual `amen_*` flag.
-6. **Top-30 amenity flags — what the data-driven expansion uncovered:** `amen_dishwasher` (#13), `amen_tv` (#15), `amen_lockbox` (#18), `amen_hot_water_kettle` (#21) are the load-bearing amenity binaries. TV / lockbox / hot-water kettle were **not** in the original hand-picked 10 — the wider net found them. About half of the 30 amenities (kitchen, freezer, wine glasses, washer, hangers) end up below SHAP rank #60, essentially dead weight that the tree-based model simply ignores.
-7. **`latitude`** sits at ~#16 (mid-pack); raw coordinates matter less once explicit distance + property-type features are available.
+2. **`bedrooms`** — clear second (≈0.08).
+3. **`availability_365`** and **`property_type_Private room in rental unit`** — top-4 (≈0.05). Host-activity and granular room-type signal.
+4. **`dist_opernhaus_km`** (≈0.045), **`reviews_per_month`** (≈0.04) and **`minimum_nights`** (≈0.04) — booking-dynamics and central-location signal.
+5. **`review_scores_rating`** (#8), **`host_acceptance_rate`** (#9), **`room_type_Private room`** (#10) — review-quality, host-responsiveness, and the legacy 3-category room split all land within the top-10.
+6. **Target-encoded `neighbourhood_cleansed` lands at #11** (≈0.032), beating `dist_hb_km` (#12). Previously this signal was spread across 34 one-hot columns whose top member (`Hard`) only reached rank #42 — encoding consolidates it into one ranked, interpretable feature.
+7. **Top-30 amenity flags — what the data-driven expansion uncovered:** `amen_dishwasher` (#14), `amen_tv` (#16), `amen_lockbox` (#17) are the load-bearing amenity binaries. TV / lockbox / hot-water kettle were **not** in the original hand-picked 10 — the wider net found them. About half of the 30 amenities (kitchen, freezer, wine glasses, washer, hangers) end up below SHAP rank #60, essentially dead weight that the tree-based model simply ignores.
+8. **`latitude`** sits at ~#20 (mid-pack); raw coordinates matter less once explicit distance + neighbourhood-encoded + property-type features are available.
 
-Compared to the previous run without host/review/property_type features, the model uses a much more diverse feature mix: structural capacity → location-by-distance → property granularity → host quality (reviews + responsiveness) → amenities. The cumulative lift on test R² (0.478 → 0.535) is consistent with these features carrying genuine pricing signal rather than just adding noise.
+Compared to the earliest run, the model now uses a much more diverse feature mix: structural capacity → location-by-distance → neighbourhood-encoded prior → property granularity → host quality (reviews + responsiveness) → amenities. The cumulative lift on test R² (0.478 → 0.530, with target encoding contributing 33 fewer features at the same accuracy) is consistent with these features carrying genuine pricing signal rather than just adding noise.
 
 See `reports/figures/shap_summary.png` for the beeswarm (direction + magnitude per sample) and `shap_bar.png` for the mean-impact ranking.
 
