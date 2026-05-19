@@ -111,9 +111,11 @@ Two distinct "phases" stand out: row 1 → 2 (proper Pipeline + tuning) and row 
 
 **About row 7 (SHAP pruning).** After step 6 we ran a SHAP analysis on the **training set** (100-sample background + 800-sample explainee, no test-set peeking) and dropped 27 raw columns whose aggregated mean \|SHAP\| was below 0.003 — mostly near-ubiquitous amenities (`amen_wifi`, `amen_kitchen`, `amen_heating`, …) that appear on >70 % of listings and therefore can't discriminate price, plus the five weakest text keywords, `instant_bookable`, and the redundant `review_scores_accuracy`. **CV-R² stayed flat (HGB 0.668 → 0.669, RF 0.619 → 0.619) but held-out test R² fell from 0.587 to 0.575 (−0.012)** — a small drop, well within typical sampling noise on a 514-row test set, but consistent across MAE/RMSE/R². We kept the pruning because the model now uses **61 raw input features instead of 88 (−31 %)** with essentially unchanged generalisation ability (the metric of record for sklearn model selection, CV-R², is unchanged), and the SHAP bar plot is much easier to read with the dead-weight features gone.
 
-### Where R² 0.575 sits, and why we stopped here
+### Where R² 0.589 sits, and why we stopped here
 
 Published Airbnb-price studies on single-snapshot Inside Airbnb data (NYC, Boston, Paris, London) typically report **test R² in the 0.50–0.65 range** when using only structured listing features — i.e. without images, multi-date scraping, or external booking-history data. **Our 0.589 sits in the upper half of that range.**
+
+**How much of the iteration-table movement is real signal vs. test-set sampling noise?** To answer this we bootstrapped the held-out test set 1000× (resampling 514 rows with replacement) and re-computed each metric on each resample. Bootstrap 95 % CIs on the winner: **MAE [32.50, 41.42] CHF, RMSE [51.63, 73.37] CHF, R² [0.510, 0.666]** — the R² CI alone spans ±0.078. So although our R² climbed steadily from 0.458 to 0.589 over eight rounds (a +0.131 absolute gain, comfortably outside the CI), the smaller step-to-step deltas — most notably step 8's +0.014 from target-encoding `property_type` — are *not* statistically distinguishable from sampling noise on this particular 514-row test split. We keep those "small win" steps when they also bring methodological benefits (cleaner SHAP picture, smaller feature space) rather than relying on the headline R² movement alone. Bootstrap CIs are saved alongside the point estimates in `reports/metrics.json`.
 
 The remaining ~42 % of price variance that no structured-features model can capture from a single snapshot is intrinsically:
 - **Host pricing strategy** (subjective, often inconsistent across hosts) — the single biggest source.
@@ -133,6 +135,29 @@ Best hyperparameters from `GridSearchCV` on the current run:
 
 A `DummyRegressor(strategy='mean')` baseline is also printed in nb04 to anchor what "zero skill" looks like on this data.
 
+### Per-segment performance
+
+A single global R² masks large differences across listing types. Breaking the 514-row test set into segments by price tier (33rd / 66th percentile of the held-out CHF distribution), location (`min_dist_venue_km` ≤ 2 km vs > 2 km), and room type gives:
+
+| Segment                       |   n | MAE (CHF) | RMSE (CHF) | MAE as % of segment mean |
+|-------------------------------|----:|----------:|-----------:|-------------------------:|
+| Price low      (≤ 109 CHF)    | 171 |     18.95 |      29.38 |                    23.1% |
+| Price mid      (109 – 165 CHF)| 169 |     26.76 |      38.43 |                    19.9% |
+| **Price luxury (> 165 CHF)**  | 174 | **64.00** |      96.58 |                    24.6% |
+| Central        (≤ 2 km venue) | 414 |     36.06 |      57.97 |                    22.3% |
+| Peripheral     (> 2 km venue) | 100 |     39.69 |      79.32 |                    26.2% |
+| Entire home/apt               | 403 |     37.97 |      63.72 |                    22.0% |
+| Private room                  | 107 |     29.23 |      51.79 |                    27.2% |
+| **OVERALL**                   | 514 |     36.77 |      62.69 |                    23.0% |
+
+**The headline story:** the model is **strong on mainstream listings** (low- and mid-price tiers: MAE 19 – 27 CHF, 20 – 23 % of mean) and **weak on the luxury tier** (MAE 64 CHF — 3.4× higher absolute error than low-tier, despite roughly equal sample sizes). The relative-MAE column collapses the absolute scale: in relative terms low and luxury are similar (~23 – 25 %), but absolute prediction errors on luxury listings are large enough to drive most of the overall RMSE.
+
+**Central vs peripheral** shows a smaller but consistent gap (22.3 % vs 26.2 % relative MAE) — the venue-distance and target-encoded neighbourhood features mostly capture the location effect, but listings on the city edge are still ~16 % harder to predict.
+
+**Private rooms vs entire apartments**: private rooms have *lower* absolute MAE (29 vs 38 CHF) but *higher* relative MAE (27 % vs 22 %). Private rooms cluster in a narrower price band, so the absolute error is naturally smaller, but as a fraction of the segment's price level the model is less accurate.
+
+The luxury-tier weakness is the practical limit: it is exactly the segment where the variance components named below — photos, host pricing strategy, brand effects, dynamic pricing — dominate over structural features. Capping the target or stratifying on price tier (the "two-expert" mixture we already tried, see *Experiments that didn't pay off*) didn't help, confirming that this is a data limitation rather than a model-choice one.
+
 ## Key findings (SHAP) — HistGradientBoosting winner
 
 Mean |SHAP value| on log-price scale (top features, from `reports/figures/shap_bar.png`):
@@ -149,7 +174,29 @@ Mean |SHAP value| on log-price scale (top features, from `reports/figures/shap_b
 
 Compared to the earliest run, the model now uses a much more diverse feature mix: structural capacity → property-type price prior → location (distance + neighbourhood prior) → host professionalisation → booking dynamics (incl. per-day calendar strategy) → review quality → amenities → text framing. The cumulative lift on test R² (0.478 → 0.589, +0.111) is consistent with each of these feature families carrying genuine, partially-orthogonal pricing signal.
 
-See `reports/figures/shap_summary.png` for the beeswarm (direction + magnitude per sample) and `shap_bar.png` for the mean-impact ranking.
+### Permutation importance — independent cross-check on SHAP
+
+SHAP rankings depend on the tree-explainer's specific algorithm (and quirks like `check_additivity=False` for HGB). To validate them we additionally ran model-agnostic **permutation importance** — each feature column on the test set is shuffled 10× and the average drop in R² is the importance. Unlike SHAP, permutation captures each feature's *marginal* contribution (the model's loss when the feature is unavailable) rather than spreading credit among correlated features. Top-7 of each ranking side by side:
+
+| Rank | Permutation (Δ R² when shuffled) | SHAP (mean \|SHAP\|)                |
+|-----:|---------------------------------|--------------------------------------|
+|    1 | `property_type` (0.184)         | `accommodates` (0.111)               |
+|    2 | `accommodates` (0.146)          | `property_type` (0.110)              |
+|    3 | `bedrooms` (0.070)              | `bedrooms` (0.078)                   |
+|    4 | `host_total_listings_count` (0.046) | `host_total_listings_count` (0.050) |
+|    5 | `host_acceptance_rate` (0.031)  | `availability_30` (0.036)            |
+|    6 | `cal_min_nights_median` (0.022) | `dist_opernhaus_km` (0.031)          |
+|    7 | `availability_365` (0.021)      | `dist_hb_km` (0.029)                 |
+
+**Top-4 match exactly between the two methods**, validating the headline finding that `property_type` (TE) and `accommodates` are the two dominant signal carriers, followed by `bedrooms` and `host_total_listings_count`. The biggest discrepancies are all in the same direction — features whose signal is partially shared with a correlated neighbour rank *higher* in permutation than in SHAP:
+
+- `host_acceptance_rate` ↑ (permutation #5 vs SHAP #13) — correlated with `host_response_rate` and the `review_scores_*` family.
+- `availability_365` ↑ (permutation #7 vs SHAP #14) — correlated with `availability_30 / 60 / 90`; SHAP splits the booking-pressure credit four ways.
+- `minimum_nights` ↑ (permutation #11 vs SHAP #24) — heavily correlated with `cal_min_nights_median` (its calendar-aggregate counterpart, which dominates in SHAP).
+
+This is the expected behaviour: SHAP distributes credit *fairly* among correlated features so each gets a smaller share, while permutation captures the full marginal contribution that the model would actually lose. The agreement on top features means both rankings can be cited interchangeably for interpretation; permutation is the better one when the question is "how much does this feature actually buy us in held-out R²?".
+
+See `reports/figures/shap_summary.png` for the SHAP beeswarm (direction + magnitude per sample), `shap_bar.png` for the SHAP mean-impact ranking, and `permutation_importance.png` for the permutation top-15 with ±1 std error bars.
 
 ## Experiments that didn't pay off
 
